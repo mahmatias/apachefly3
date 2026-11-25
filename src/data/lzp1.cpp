@@ -78,9 +78,8 @@ static std::optional<std::vector<uint8_t>> try_decompress_from(
         return std::nullopt;
     }
 
-    // Safety limits
-    size_t max_output = expected_size * 4;  // Allow some overshoot
-    if (max_output < 200000) max_output = 200000;  // Match debug_lzp1
+    // Safety limits - stop at expected size to avoid garbage after valid data
+    size_t max_output = expected_size;
     size_t max_iterations = max_bits;  // Each iteration consumes at least 1 bit
 
     size_t iterations = 0;
@@ -195,12 +194,13 @@ std::optional<std::vector<uint8_t>> lzp1_decompress(const uint8_t* src, size_t s
     std::cerr << "[debug] max_bits=" << max_bits << "\n";
 
     // Scan for all CLEAR_CODE positions, try each one, pick the best result
-    // (like debug_lzp1.cpp does) - try both LSB and MSB bit ordering
+    // Priority: exact match to expected size > "3DO1" magic header > largest output
     std::optional<std::vector<uint8_t>> best_result;
     size_t best_size = 0;
     size_t best_start = 0;
     bool best_msb = false;
     int found = 0;
+    bool found_exact = false;
 
     for (int msb = 0; msb < 2; msb++) {
         bool msb_first = (msb == 1);
@@ -213,25 +213,70 @@ std::optional<std::vector<uint8_t>> lzp1_decompress(const uint8_t* src, size_t s
             uint16_t code = msb_first ? read_9bits_msb(compressed_data, compressed_size, test_pos)
                                       : read_9bits_lsb(compressed_data, compressed_size, test_pos);
             if (code == 256) {  // CLEAR_CODE
-                std::cerr << "[debug] Found CLEAR at bit " << test_pos << " (" << (msb_first ? "MSB" : "LSB") << "), trying...\n";
+                // Extra debug for known good positions
+                bool debug_this = (test_pos == 3972 || test_pos == 3980 || test_pos == 3988 || test_pos == 4051 || test_pos == 4052 || test_pos == 16 || test_pos == 17);
+                if (debug_this) {
+                    std::cerr << "[debug] Found CLEAR at bit " << test_pos << " (" << (msb_first ? "MSB" : "LSB") << ") - KNOWN GOOD POSITION, trying...\n";
+                } else {
+                    std::cerr << "[debug] Found CLEAR at bit " << test_pos << " (" << (msb_first ? "MSB" : "LSB") << "), trying...\n";
+                }
                 auto result = try_decompress_from(compressed_data, compressed_size, test_pos, decompressed_size, msb_first);
                 if (result && result->size() > 0) {
                     found++;
-                    if (result->size() > best_size) {
+                    bool is_exact = (result->size() == decompressed_size);
+                    bool has_3do1 = (result->size() >= 4 &&
+                        (*result)[0] == '3' && (*result)[1] == 'D' &&
+                        (*result)[2] == 'O' && (*result)[3] == '1');
+
+                    // Debug early positions
+                    if (test_pos < 1000 || (msb_first && test_pos < 7000 && test_pos > 6000)) {
+                        std::cerr << "[debug]   Result at bit " << test_pos << " (" << (msb_first ? "MSB" : "LSB") << "): size=" << result->size() << " exact=" << is_exact << " 3do1=" << has_3do1 << "\n";
+                    }
+                    // Also log MSB positions around 6200
+                    if (msb_first && test_pos > 6100 && test_pos < 6300) {
+                        std::cerr << "[debug]   MSB Result at bit " << test_pos << ": size=" << result->size() << " exact=" << is_exact << " 3do1=" << has_3do1 << "\n";
+                    }
+
+                    // Priority: 3DO1 magic header > exact size match > larger size
+                    bool update = false;
+                    if (!best_result) {
+                        update = true;
+                    } else if (has_3do1) {
+                        // Check if current best has 3DO1
+                        bool best_has_3do1 = (best_result->size() >= 4 &&
+                            (*best_result)[0] == '3' && (*best_result)[1] == 'D' &&
+                            (*best_result)[2] == 'O' && (*best_result)[3] == '1');
+                        if (!best_has_3do1) update = true;  // 3DO1 beats non-3DO1
+                    } else if (is_exact && best_size != decompressed_size) {
+                        // Exact match beats non-exact, non-3DO1 results
+                        bool best_has_3do1 = (best_result->size() >= 4 &&
+                            (*best_result)[0] == '3' && (*best_result)[1] == 'D' &&
+                            (*best_result)[2] == 'O' && (*best_result)[3] == '1');
+                        bool best_is_exact = (best_size == decompressed_size);
+                        if (!best_has_3do1 && !best_is_exact) update = true;
+                    } else if (result->size() > best_size && !has_3do1) {
+                        // Larger size (fallback), but only if neither has 3DO1
+                        bool best_has_3do1 = (best_result->size() >= 4 &&
+                            (*best_result)[0] == '3' && (*best_result)[1] == 'D' &&
+                            (*best_result)[2] == 'O' && (*best_result)[3] == '1');
+                        if (!best_has_3do1) update = true;
+                    }
+
+                    if (update) {
                         best_size = result->size();
                         best_start = test_pos;
                         best_msb = msb_first;
                         best_result = std::move(result);
 
-                        // If we hit the expected size exactly, that's likely the right one
-                        if (best_size == decompressed_size) {
-                            break;
+                        if (has_3do1) {
+                            std::cerr << "[debug] Found 3DO1 header at bit " << test_pos << "!\n";
+                            // Don't break - there might be a better 3DO1 result, or we want to complete the scan
                         }
                     }
                 }
             }
         }
-        if (best_size == decompressed_size) break;
+        if (found_exact) break;
     }
 
     if (!best_result) {
