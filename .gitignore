@@ -1,21 +1,33 @@
+# Build outputs
 build/
-*.obj
 *.exe
-*.dll
-*.lib
+*.obj
 *.pdb
 *.ilk
-*.exp
-*.idb
-*.sdf
-*.opensdf
-*.suo
-*.user
-*.ncb
+
+# IDE
 .vs/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
+*.user
+*.sln
+*.vcxproj*
+*.vcxproj.filters
+
+# Binary/extracted data files
+*.iso
+*.bin
+entry_*
+extracted/
+pcx_out/
+test_input
+test_lzp1_input
+tests/
+
+# Temp/debug
+*.txt
+*.log
+err*.txt
+out*.txt
+output*.txt
+help_*.txt
+identify_*.txt
+extract_*.txt
